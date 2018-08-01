@@ -1,0 +1,15 @@
+The format of the results file is the following
+	Each line correspond to one model, with the fields being:
+		Number of epochs
+		precision
+		sps
+		user coverage
+		number of unique items in the test set
+		number of unique items in the recommendations
+		number of unique items in the succesful recommendations
+		number of unique items in the short-term test set (when the goal is to predict precisely the next item)
+		number of unique items in the successful short-term recommendations
+		recall
+		NDCG
+	NB: all the metrics are computed "@10"
+	
