@@ -114,56 +114,56 @@ class Network():
                 try:
                     batch = next(batch_generator)
                     ts = time()
-        #             cost = self.train_function(*batch)
-        #             ts_sum += time() - ts
-        #             # print(output)
-        #             # print(cost)
-        #
-        #             # exit()
-        #
-        #             if np.isnan(cost):
-        #                 raise ValueError("Cost is NaN")
+                    cost = self.prepare_networks(self.n_items, batch)
+                    ts_sum += time() - ts
+                    # print(output)
+                    # print(cost)
+
+                    # exit()
+
+                    if np.isnan(cost):
+                        raise ValueError("Cost is NaN")
         #
                 except StopIteration:
                     break
         #
-        #         current_train_cost.append(cost)
-        #         # current_train_cost.append(0)
-        #
-        #         # Check if it is time to save the model
-        #         iterations += 1
-        #
-        #         if iterations >= next_save:
-        #             if iterations >= min_iterations:
-        #                 # Save current epoch
-        #                 epochs.append(epochs_offset + self.dataset.training_set.epochs)
-        #
-        #                 # Average train cost
-        #                 train_costs.append(np.mean(current_train_cost))
-        #                 current_train_cost = []
-        #
-        #                 # Compute validation cost
-        #                 metrics = self._compute_validation_metrics(metrics)
-        #
-        #                 # Print info
-        #                 self._print_progress(iterations, epochs[-1], start_time, train_costs, metrics,
-        #                                      validation_metrics)
-        #                 # exit()
-        #
-        #                 # Save model
-        #                 run_nb = len(metrics[list(self.metrics.keys())[0]]) - 1
-        #                 filename[run_nb] = save_dir + self.framework + "/" + self._get_model_filename(
-        #                         round(epochs[-1], 3))
-        #                 self._save(filename[run_nb])
-        #
-        #             next_save += progress
-        #
+                current_train_cost.append(cost)
+                # current_train_cost.append(0)
+
+                # Check if it is time to save the model
+                iterations += 1
+
+                if iterations >= next_save:
+                    if iterations >= min_iterations:
+                        # Save current epoch
+                        epochs.append(epochs_offset + self.dataset.training_set.epochs)
+
+                        # Average train cost
+                        train_costs.append(np.mean(current_train_cost))
+                        current_train_cost = []
+
+                        # Compute validation cost
+                        metrics = self._compute_validation_metrics(metrics)
+
+                        # Print info
+                        self._print_progress(iterations, epochs[-1], start_time, train_costs, metrics,
+                                             validation_metrics)
+                        # exit()
+
+                        # Save model
+                        run_nb = len(metrics[list(self.metrics.keys())[0]]) - 1
+                        filename[run_nb] = save_dir + self.framework + "/" + self._get_model_filename(
+                                round(epochs[-1], 3))
+                        self._save(filename[run_nb])
+
+                    next_save += progress
+
         except KeyboardInterrupt:
             print('Training interrupted')
         #
-        # best_run = np.argmax(
-        #     np.array(metrics[validation_metrics[0]]) * self.metrics[validation_metrics[0]]['direction'])
-        # return ({m: metrics[m][best_run] for m in self.metrics.keys()}, time() - start_time, filename[best_run])
+        best_run = np.argmax(
+            np.array(metrics[validation_metrics[0]]) * self.metrics[validation_metrics[0]]['direction'])
+        return ({m: metrics[m][best_run] for m in self.metrics.keys()}, time() - start_time, filename[best_run])
 
     def _gen_mini_batch(self, sequence_generator, test=False):
         ''' Takes a sequence generator and produce a mini batch generator.
@@ -234,32 +234,17 @@ class Network():
         print(iterations, epochs, time() - start_time, train_costs[-1],
               ' '.join(map(str, [metrics[m][-1] for m in self.metrics])), file=sys.stderr)
 
-    def prepare_networks(self, n_items):
+    def prepare_networks(self, n_items, batch):
 
         self.n_items = n_items
         self.net = MetaLearner(None, self.n_items, self.n_items, 30, 2, self.batch_size, True)
-        if self.recurrent_layer.embedding_size > 0:
-            self.X = tf.placeholder(tf.int32, [None, self.max_length])
-            word_embeddings = tf.get_variable("word_embeddings", [self.n_items, self.recurrent_layer.embedding_size])
-            rnn_input = tf.nn.embedding_lookup(word_embeddings, self.X)
-        # print(rnn_input) # (?, max_length, embedding_size)
-        else:
-            self.X = tf.placeholder(tf.float32, [None, self.max_length, self.n_items])
-            rnn_input = self.X
-        self.Y = tf.placeholder(tf.float32, [None, self.n_items])
-        self.length = tf.placeholder(tf.int32, [None, ])
-
-        # self.length = self.get_length(rnn_input)
-        self.rnn_out, _state = self.recurrent_layer(rnn_input, self.length,
-                                                    activate_f=activation)  # (B, max_length, hidden)
-        self.rnn_out, _state = LSTM()
-        self.output = tf.layers.dense(self.last_hidden, self.n_items, activation=None)
+        self.rnn_out, _state = self.net.takeAction(batch[0])  # (B, max_length, hidden)
+        self.output = nn.Linear(self.rnn_out, self.n_items)(self.rnn_out)
         # applying attention makes last_hidden have undefined rank. need to reshape
 
         self.softmax = tf.nn.softmax(self.output)
         self.xent = -tf.reduce_sum(self.Y * tf.log(self.softmax))
         self.cost = tf.reduce_mean(self.xent)
-        # tf.summary.histogram("cost", self.cost)
 
         optimizer = Adam(model.parameters(), )
         self.training = optimizer.minimize(self.cost)
@@ -290,32 +275,12 @@ class Network():
         add value to lists in metrics dictionary
         """
         ev = evaluation.Evaluator(self.dataset, k=10)
-        if not self.iter:
-            for batch_input, goal in self._gen_mini_batch(self.dataset.validation_set(epochs=1), test=True):
-                output = self.sess.run(self.softmax, feed_dict={self.X: batch_input[0], self.length: batch_input[2]})
-                predictions = np.argpartition(-output, list(range(10)), axis=-1)[0, :10]
-                # print("predictions")
-                # print(predictions)
-                ev.add_instance(goal, predictions)
-        else:
-            for sequence, user in self.dataset.validation_set(epochs=1):
-                seq_lengths = list(range(1, len(sequence)))  # 1, 2, 3, ... len(sequence)-1
-                for seq_length in seq_lengths:
-                    X = np.zeros((1, self.max_length, self._input_size()),
-                                 dtype=self._input_type)  # input shape of the RNN
-                    # Y = np.zeros((1, self.n_items))  # Y가 왜 있는지????? 안쓰임
-                    length = np.zeros((1,), dtype=np.int32)
-
-                    seq_by_max_length = sequence[max(length - self.max_length, 0):seq_length]  # last max length or all
-                    X[0, :len(seq_by_max_length), :] = np.array(map(lambda x: self._get_features(x), seq_by_max_length))
-                    length[0] = len(seq_by_max_length)
-
-                    output = self.sess.run(self.softmax, feed_dict={self.X: X, self.length: length})
-                    predictions = np.argpartition(-output, list(range(10)), axis=-1)[0, :10]
-                    # print("predictions")
-                    # print(predictions)
-                    goal = sequence[seq_length:][0]
-                    ev.add_instance(goal, predictions)
+        for batch_input, goal in self._gen_mini_batch(self.dataset.validation_set(epochs=1), test=True):
+            output = self.softmax
+            predictions = np.argpartition(-output, list(range(10)), axis=-1)[0, :10]
+            # print("predictions")
+            # print(predictions)
+            ev.add_instance(goal, predictions)
 
         metrics['recall'].append(ev.average_recall())
         metrics['sps'].append(ev.sps())
