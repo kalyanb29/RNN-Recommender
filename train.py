@@ -38,7 +38,8 @@ def main():
     Flags, args = parser.parse_known_args()
     dataset = Dataset.DataHandler(dirname=Flags.dataset, extended_training_set=Flags.extended_set, shuffle_training=Flags.tshuffle)
     network = Network()
-    network.train(dataset)
+    network.train(dataset, save_dir=os.getcwd() + '/Models')
 
 if __name__ == '__main__':
+    torch.cuda.set_device(2)
     main()

@@ -9,7 +9,7 @@ from net import *
 from time import time
 from util import evaluation
 import numpy as np
-
+import torch.optim as optim
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -64,6 +64,7 @@ class Network():
               save_dir='',
               min_iterations=0,
               max_iter=np.inf,
+              lr = 0.01,
               load_last_model=False,
               early_stopping=None,
               validation_metrics=['sps']):
@@ -84,6 +85,7 @@ class Network():
 
         self.dataset = dataset
         self.n_items = dataset.n_items
+        self.lr = lr
 
         if len(set(validation_metrics) & set(self.metrics.keys())) < len(validation_metrics):
             raise ValueError(
@@ -107,6 +109,8 @@ class Network():
         metrics = {name: [] for name in self.metrics.keys()}
         filename = {}
         ts_sum = 0.
+        self.net = MetaLearner(None, self.n_items, self.n_items, 30, 2, self.batch_size, True)
+        optimizer = optim.SGD(self.net.metalearner.parameters(), lr=self.lr, momentum=0.9, nesterov=True)
         try:
             while time() - start_time < max_time and iterations < max_iter:
 
@@ -114,20 +118,24 @@ class Network():
                 try:
                     batch = next(batch_generator)
                     ts = time()
-                    cost = self.prepare_networks(self.n_items, batch)
+                    output, target = self.prepare_networks(batch, self.batch_size)
+                    cost = F.cross_entropy(output, torch.max(target, 1)[1])
+                    optimizer.zero_grad()
+                    cost.backward()
+                    optimizer.step()
                     ts_sum += time() - ts
                     # print(output)
                     # print(cost)
 
                     # exit()
 
-                    if np.isnan(cost):
-                        raise ValueError("Cost is NaN")
+                    # if np.isnan(cost):
+                    #     raise ValueError("Cost is NaN")
         #
                 except StopIteration:
                     break
         #
-                current_train_cost.append(cost)
+                current_train_cost.append(cost.item())
                 # current_train_cost.append(0)
 
                 # Check if it is time to save the model
@@ -152,8 +160,7 @@ class Network():
 
                         # Save model
                         run_nb = len(metrics[list(self.metrics.keys())[0]]) - 1
-                        filename[run_nb] = save_dir + self.framework + "/" + self._get_model_filename(
-                                round(epochs[-1], 3))
+                        filename[run_nb] = save_dir + '/model.net'
                         self._save(filename[run_nb])
 
                     next_save += progress
@@ -234,20 +241,21 @@ class Network():
         print(iterations, epochs, time() - start_time, train_costs[-1],
               ' '.join(map(str, [metrics[m][-1] for m in self.metrics])), file=sys.stderr)
 
-    def prepare_networks(self, n_items, batch):
-
-        self.n_items = n_items
-        self.net = MetaLearner(None, self.n_items, self.n_items, 30, 2, self.batch_size, True)
-        self.rnn_out, _state = self.net.takeAction(batch[0])  # (B, max_length, hidden)
-        self.output = nn.Linear(self.rnn_out, self.n_items)(self.rnn_out)
-        # applying attention makes last_hidden have undefined rank. need to reshape
-
-        self.softmax = tf.nn.softmax(self.output)
-        self.xent = -tf.reduce_sum(self.Y * tf.log(self.softmax))
-        self.cost = tf.reduce_mean(self.xent)
-
-        optimizer = Adam(model.parameters(), )
-        self.training = optimizer.minimize(self.cost)
+    def prepare_networks(self, batch, batch_size, flag = 'Train'):
+        if flag == 'Train':
+            self.net.metalearner.train()
+        else:
+            self.net.metalearner.eval()
+        with torch.no_grad():
+            inputs = Variable(torch.Tensor(len(batch[0]), batch_size, self.n_items)).cuda()
+            for i in range(len(batch[0])):
+                for j in range(batch_size):
+                    inputs[i][j] = Variable(torch.Tensor(batch[0][i][j]))
+            target = Variable(torch.Tensor(batch_size, self.n_items)).cuda()
+            for i in range(batch_size):
+                target[i] = Variable(torch.Tensor(batch[1][i]))
+        output = self.net.takeAction(inputs, batch_size)
+        return output, target# (B, max_length, hidden)
 
     def _prepare_input(self, sequences):
         """ Sequences is a list of [user_id, input_sequence, targets]
@@ -276,8 +284,8 @@ class Network():
         """
         ev = evaluation.Evaluator(self.dataset, k=10)
         for batch_input, goal in self._gen_mini_batch(self.dataset.validation_set(epochs=1), test=True):
-            output = self.softmax
-            predictions = np.argpartition(-output, list(range(10)), axis=-1)[0, :10]
+            output, _ = self.prepare_networks(batch_input, 1, 'Test')
+            predictions = np.argpartition(-output.detach().cpu().numpy(), list(range(10)), axis=-1)[0, :10]
             # print("predictions")
             # print(predictions)
             ev.add_instance(goal, predictions)
@@ -297,7 +305,7 @@ class Network():
 
     def _get_features(self, item):
         '''Change a tuple (item_id, rating) into a list of features to feed into the RNN
-        features have the following structure: [one_hot_encoding, personal_rating on a scale of ten, average_rating on a scale of ten, popularity on a log scale of ten]
+        features have the following structure: [one_hot_encoding]
         '''
 
         # item = (item_id, rating)
@@ -305,3 +313,11 @@ class Network():
         one_hot_encoding = np.zeros(self.n_items)
         one_hot_encoding[item[0]] = 1
         return one_hot_encoding
+
+    def _save(self, filename):
+        '''Save the parameters of a network into a file
+        '''
+        print('Save model in ' + filename)
+        if not os.path.exists(os.path.dirname(filename)):
+            os.makedirs(os.path.dirname(filename))
+        torch.save(self.net, filename)

@@ -12,12 +12,12 @@ class MetaLearner:
         self.actions = []
         self.batch_size = batch_size
 
-    def takeAction(self, input):
-        inputs = Variable(torch.Tensor(len(input), self.batch_size, self.input_size)).cuda()
-        for i in range(len(input)):
-            for j in range(self.batch_size):
-                inputs[i][j] = Variable(torch.Tensor(input[i][j]))
-        hn = Variable(torch.zeros(self.nlayers * self.bidirectional, self.batch_size, self.hidden_size)).cuda()
-        cn = Variable(torch.zeros(self.nlayers * self.bidirectional, self.batch_size, self.hidden_size)).cuda()
+    def takeAction(self, inputs, batch_size=1):
+        if batch_size is None:
+            hn = Variable(torch.zeros(self.nlayers * self.bidirectional, self.batch_size, self.hidden_size)).cuda()
+            cn = Variable(torch.zeros(self.nlayers * self.bidirectional, self.batch_size, self.hidden_size)).cuda()
+        else:
+            hn = Variable(torch.zeros(self.nlayers * self.bidirectional, batch_size, self.hidden_size)).cuda()
+            cn = Variable(torch.zeros(self.nlayers * self.bidirectional, batch_size, self.hidden_size)).cuda()
         output = self.metalearner(inputs, (hn, cn))
         return output
